@@ -1361,7 +1361,7 @@ function nextKitchenAction(o) {
     btns.push(`<button class="btn sm danger" onclick="setOrderStatus('${o.id}','Cancelled')">Cancel</button>`);
   }
   if ((o.status === 'Ready' || o.status === 'Served') && !o.billed) {
-    btns.push(`<button class="btn sm primary" onclick="loadKitchenOrderIntoCart('${o.id}');go('pos')">Bill this order</button>`);
+    btns.push(`<button class="btn sm primary" onclick="go('pos');loadKitchenOrderIntoCart('${o.id}')">Bill this order</button>`);
   }
   return btns.join('');
 }
@@ -2351,4 +2351,3 @@ function render() {
 }
 
 boot();
-
