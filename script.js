@@ -481,9 +481,50 @@ function fieldHTML(f, val) {
   if (f.type === 'textarea') {
     return `<div class="field"><label>${escapeHtml(f.label)}</label><textarea name="${f.name}" rows="3">${escapeHtml(val)}</textarea></div>`;
   }
+  if (f.type === 'image') {
+    const preview = val ? `<img src="${escapeHtml(val)}" style="width:64px;height:64px;object-fit:cover;border-radius:8px;border:1px solid var(--line);">` : `<div style="width:64px;height:64px;border-radius:8px;border:1px dashed var(--line);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--muted);text-align:center;">No photo</div>`;
+    return `<div class="field">
+      <label>${escapeHtml(f.label)}</label>
+      <div class="row" style="align-items:center;gap:10px;">
+        <div id="imgprev_${f.name}">${preview}</div>
+        <div>
+          <input type="file" accept="image/*" onchange="handleImageFieldChange(event,'${f.name}')">
+          <div class="hint" style="margin-top:4px;">Optional — photo is resized automatically.</div>
+        </div>
+      </div>
+      <input type="hidden" name="${f.name}" id="imgval_${f.name}" value="${escapeHtml(val)}">
+    </div>`;
+  }
   return `<div class="field"><label>${escapeHtml(f.label)}</label>
     <input type="${f.type || 'text'}" name="${f.name}" value="${escapeHtml(val)}" ${f.step ? `step="${f.step}"` : ''} ${f.required !== false ? 'required' : ''} placeholder="${escapeHtml(f.placeholder || '')}">
   </div>`;
+}
+// Reads a chosen photo, downsizes it to a small thumbnail (keeps localStorage light),
+// and writes the result into the field's hidden input + live preview.
+function handleImageFieldChange(e, fieldName) {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function (ev) {
+    const img = new Image();
+    img.onload = function () {
+      const maxDim = 220;
+      let w = img.width, h = img.height;
+      if (w > h) { if (w > maxDim) { h = Math.round(h * maxDim / w); w = maxDim; } }
+      else { if (h > maxDim) { w = Math.round(w * maxDim / h); h = maxDim; } }
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+      const hidden = document.getElementById('imgval_' + fieldName);
+      if (hidden) hidden.value = dataUrl;
+      const prev = document.getElementById('imgprev_' + fieldName);
+      if (prev) prev.innerHTML = `<img src="${dataUrl}" style="width:64px;height:64px;object-fit:cover;border-radius:8px;border:1px solid var(--line);">`;
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
 }
 function submitModalForm(e) {
   e.preventDefault();
@@ -867,7 +908,23 @@ function blockedScreen() {
 /* ============================================================
    DASHBOARD
    ============================================================ */
+// Which dashboard "lens" each role sees. Admin/Manager get everything (unchanged
+// behaviour); other roles get a smaller, relevant-to-their-job subset instead of
+// the full financial + inventory + floor picture.
+const DASHBOARD_ROLE_VIEW = {
+  Admin: 'full', Manager: 'full',
+  Accountant: 'finance',
+  Cashier: 'sales',
+  'Inventory Officer': 'inventory', Storekeeper: 'inventory',
+  Waiter: 'floor', 'Kitchen Staff': 'floor'
+};
+function dashboardViewFor() {
+  const role = S.session && S.session.employee ? S.session.employee.role : 'Admin';
+  return DASHBOARD_ROLE_VIEW[role] || 'full';
+}
 function screenDashboard() {
+  const view = dashboardViewFor();
+  const role = S.session && S.session.employee ? S.session.employee.role : 'Admin';
   const txns = S.cur.transactions.filter(t => t.date === todayISO() && t.status === 'Completed');
   const todaySales = txns.reduce((s, t) => s + t.total, 0);
   const todayGst = txns.reduce((s, t) => s + t.taxAmount, 0);
@@ -887,42 +944,79 @@ function screenDashboard() {
   (S.cur.payments || []).filter(p => p.date === todayISO()).forEach(p => { byPay[p.method] = (byPay[p.method] || 0) + Number(p.amount); });
   const recent = [...S.cur.transactions].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 6);
 
-  return `
+  const salesKpis = `
   <div class="grid cols-4">
     <div class="card kpi"><div class="label">Today's Sales</div><div class="value">${money(todaySales)}</div></div>
     <div class="card kpi"><div class="label">Today's Orders</div><div class="value">${txns.length}</div></div>
-    <div class="card kpi"><div class="label">Today's Profit</div><div class="value good">${money(todayProfit)}</div></div>
-    <div class="card kpi"><div class="label">GST Collected Today</div><div class="value">${money(todayGst)}</div></div>
-  </div>
+    ${view === 'full' || view === 'finance' ? `<div class="card kpi"><div class="label">Today's Profit</div><div class="value good">${money(todayProfit)}</div></div>
+    <div class="card kpi"><div class="label">GST Collected Today</div><div class="value">${money(todayGst)}</div></div>` : `
+    <div class="card kpi"><div class="label">Pending Orders</div><div class="value ${pendingOrders ? 'warn' : 'good'}">${pendingOrders}</div></div>
+    <div class="card kpi"><div class="label">Total Customers</div><div class="value">${totalCustomers}</div></div>`}
+  </div>`;
+
+  const financeExtraKpis = `
   <div class="grid cols-4" style="margin-top:16px;">
     <div class="card kpi"><div class="label">Total Products</div><div class="value">${totalProducts}</div></div>
     <div class="card kpi"><div class="label">Total Customers</div><div class="value">${totalCustomers}</div></div>
-    <div class="card kpi"><div class="label">Pending Orders</div><div class="value ${pendingOrders?'warn':'good'}">${pendingOrders}</div></div>
+    <div class="card kpi"><div class="label">Pending Orders</div><div class="value ${pendingOrders ? 'warn' : 'good'}">${pendingOrders}</div></div>
     <div class="card kpi"><div class="label">Today's Expenses</div><div class="value warn">${money(todayExpenses)}</div></div>
-  </div>
+  </div>`;
+
+  const stockKpis = `
   <div class="grid cols-2" style="margin-top:16px;">
     <div class="card kpi"><div class="label">Low Stock Items</div><div class="value ${lowStock.length ? 'warn' : 'good'}">${lowStock.length}</div></div>
     <div class="card kpi"><div class="label">Out-of-Stock Items</div><div class="value ${outStock.length ? 'warn' : 'good'}">${outStock.length}</div></div>
-  </div>
-  ${S.cur.business.type === 'Restaurant' ? restaurantDashboardExtra() : groceryDashboardExtra()}
-  ${dashboardCharts()}
+  </div>`;
 
+  const businessExtra = S.cur.business.type === 'Restaurant' ? restaurantDashboardExtra() : groceryDashboardExtra();
+
+  const topProductsTable = `
   <div class="section-title">Top-selling products</div>
   <div class="table-wrap"><table><thead><tr><th>Product</th><th>Units sold</th></tr></thead><tbody>
     ${top.length ? top.map(([n, q]) => `<tr><td>${escapeHtml(n)}</td><td class="mono">${q}</td></tr>`).join('') : `<tr><td colspan="2" class="empty-state">No sales recorded yet.</td></tr>`}
-  </tbody></table></div>
+  </tbody></table></div>`;
 
+  const paymentBreakdownTable = `
   <div class="section-title">Payment method breakdown (today)</div>
   <div class="table-wrap"><table><thead><tr><th>Method</th><th>Amount</th></tr></thead><tbody>
     ${Object.keys(byPay).length ? Object.entries(byPay).map(([m, a]) => `<tr><td>${escapeHtml(m)}</td><td class="mono">${money(a)}</td></tr>`).join('') : `<tr><td colspan="2" class="empty-state">No payments today.</td></tr>`}
-  </tbody></table></div>
+  </tbody></table></div>`;
 
+  const recentTransactionsTable = `
   <div class="section-title">Recent transactions <span class="hint"><button class="link-btn" onclick="go('invoices')">View all</button></span></div>
   <div class="table-wrap"><table><thead><tr><th>Invoice</th><th>Date</th><th>Customer</th><th>Total</th><th>Status</th></tr></thead><tbody>
     ${recent.length ? recent.map(t => `<tr><td class="mono">${t.invoiceNo}</td><td>${fmtDate(t.date)}</td><td>${escapeHtml(customerName(t.customerId))}</td><td class="mono">${money(t.total)}</td><td><span class="pill status-${t.status.replace(' ', '')}">${t.status}</span></td></tr>`).join('') : `<tr><td colspan="5" class="empty-state">No transactions yet — go to POS to record your first sale.</td></tr>`}
-  </tbody></table></div>
-  `;
+  </tbody></table></div>`;
+
+  const pendingKitchenList = (() => {
+    const q = (S.cur.orders || []).filter(o => ['New', 'Accepted', 'Preparing', 'Ready'].includes(o.status)).slice(0, 8);
+    return `
+    <div class="section-title">Open kitchen tickets <span class="hint"><button class="link-btn" onclick="go('orders')">View all</button></span></div>
+    <div class="table-wrap"><table><thead><tr><th>Ticket</th><th>Type</th><th>Status</th><th>Items</th></tr></thead><tbody>
+      ${q.length ? q.map(o => `<tr><td class="mono">${escapeHtml(o.kot || o.id)}</td><td>${escapeHtml(o.orderType || '—')}${o.table ? ' · ' + escapeHtml(o.table) : ''}</td><td><span class="pill">${escapeHtml(o.status)}</span></td><td>${(o.items || []).map(i => `${i.qty}× ${escapeHtml(i.name)}`).join(', ')}</td></tr>`).join('') : `<tr><td colspan="4" class="empty-state">No open kitchen tickets right now.</td></tr>`}
+    </tbody></table></div>`;
+  })();
+
+  const roleBanner = view === 'full' ? '' : `<div class="hint" style="margin-bottom:12px;">Showing a ${escapeHtml(role)}-focused view of the dashboard.</div>`;
+
+  let sections = '';
+  if (view === 'full') {
+    sections = `${salesKpis}${financeExtraKpis}${stockKpis}${businessExtra}${dashboardCharts()}${topProductsTable}${paymentBreakdownTable}${recentTransactionsTable}`;
+  } else if (view === 'finance') {
+    sections = `${salesKpis}${financeExtraKpis}${dashboardCharts()}${paymentBreakdownTable}${recentTransactionsTable}`;
+  } else if (view === 'sales') {
+    sections = `${salesKpis}${recentTransactionsTable}`;
+  } else if (view === 'inventory') {
+    sections = `${financeExtraKpis}${stockKpis}${businessExtra}`;
+  } else if (view === 'floor') {
+    sections = `${businessExtra}${pendingKitchenList}`;
+  } else {
+    sections = `${salesKpis}${financeExtraKpis}${stockKpis}${businessExtra}${dashboardCharts()}${topProductsTable}${paymentBreakdownTable}${recentTransactionsTable}`;
+  }
+
+  return `${roleBanner}${sections}`;
 }
+function customerName(id) { const c = S.cur.customers.find(c => c.id === id); return c ? c.name : 'Walk-in'; }
 function customerName(id) { const c = S.cur.customers.find(c => c.id === id); return c ? c.name : 'Walk-in'; }
 
 function dashboardCharts() {
@@ -1000,6 +1094,7 @@ function productFields() {
   const taxOpts = activeTaxRates().map(t => [t.id, `${t.name} (${t.rate}%)`]);
   return [
     { name: 'name', label: 'Product name' },
+    { name: 'image', label: 'Photo', type: 'image', required: false },
     { name: 'barcode', label: 'Barcode', required: false, placeholder: 'Auto-generated if left blank' },
     { name: 'category', label: 'Category' },
     { name: 'purchasePrice', label: 'Purchase price', type: 'number', step: '0.01' },
@@ -1015,6 +1110,7 @@ function productFields() {
 }
 function screenProducts() {
   const p = S.cur.products;
+  const isRestaurant = S.cur.business.type === 'Restaurant';
   return `
   <div class="row between" style="margin-bottom:14px;">
     <input placeholder="Search by name or barcode…" style="max-width:280px;" oninput="S.ui.q=this.value;renderProductsTable()">
@@ -1022,7 +1118,7 @@ function screenProducts() {
       <button class="btn outline" onclick="downloadTemplate()">Download Excel template</button>
       <label class="btn outline" style="margin:0;">Import from Excel<input type="file" accept=".csv" style="display:none;" onchange="handleImportFile(event)"></label>
       <button class="btn outline" onclick="exportCollectionCsv('products')">Export to Excel</button>
-      <button class="btn primary" onclick="openProductModal()">+ Add product</button>
+      <button class="btn primary" onclick="openProductModal()">+ Add ${isRestaurant ? 'menu item' : 'product'}</button>
     </div>
   </div>
   <div id="import-summary"></div>
@@ -1032,16 +1128,28 @@ function screenProducts() {
 function productsTableHTML(list) {
   const q = (S.ui.q || '').toLowerCase();
   const filtered = q ? list.filter(x => (x.name + ' ' + (x.barcode || '')).toLowerCase().includes(q)) : list;
-  return `<table><thead><tr><th>Name</th><th>Barcode</th><th>Category</th><th>Price</th><th>GST</th><th>Stock</th><th></th></tr></thead><tbody>
-    ${filtered.length ? filtered.map(x => `<tr>
-      <td>${escapeHtml(x.name)}${x.active === false ? ' <span class="pill">inactive</span>' : ''}</td>
-      <td class="mono">${escapeHtml(x.barcode || '—')}</td>
-      <td>${escapeHtml(x.category)}</td><td class="mono">${money(x.sellPrice)}</td>
-      <td>${taxLabel(x.taxId)}</td>
-      <td class="mono ${x.stock <= x.minStock ? 'warn' : ''}" style="color:${x.stock <= x.minStock ? 'var(--red)' : ''}">${x.stock} ${escapeHtml(x.unit)}</td>
-      <td><button class="btn sm outline" onclick="openProductModal('${x.id}')">Edit</button></td>
-    </tr>`).join('') : `<tr><td colspan="7" class="empty-state">No products yet. Add one manually or import from Excel.</td></tr>`}
-  </tbody></table>`;
+  const isRestaurant = S.cur.business.type === 'Restaurant';
+  const noun = isRestaurant ? 'menu item' : 'product';
+  if (!filtered.length) return `<div class="empty-state">No ${noun}s yet. Add one manually or import from Excel.</div>`;
+  const groups = {};
+  filtered.forEach(x => { const cat = (x.category || '').trim() || 'Uncategorized'; (groups[cat] = groups[cat] || []).push(x); });
+  const catNames = Object.keys(groups).sort((a, b) => a.localeCompare(b));
+  return catNames.map(cat => `
+    <div class="section-title" style="margin-top:18px;">${escapeHtml(cat)} <span class="hint">(${groups[cat].length})</span></div>
+    <table><thead><tr>
+      <th></th><th>Name</th><th>Barcode</th><th>Purchase price</th><th>Selling price</th><th>GST</th><th>Stock</th><th></th>
+    </tr></thead><tbody>
+      ${groups[cat].map(x => `<tr>
+        <td>${x.image ? `<img src="${escapeHtml(x.image)}" style="width:36px;height:36px;object-fit:cover;border-radius:6px;">` : `<div style="width:36px;height:36px;border-radius:6px;background:var(--paper);display:flex;align-items:center;justify-content:center;font-size:14px;color:var(--muted);border:1px solid var(--line);">${escapeHtml((x.name || '?').charAt(0).toUpperCase())}</div>`}</td>
+        <td>${escapeHtml(x.name)}${x.active === false ? ' <span class="pill">inactive</span>' : ''}</td>
+        <td class="mono">${escapeHtml(x.barcode || '—')}</td>
+        <td class="mono">${money(x.purchasePrice || 0)}</td>
+        <td class="mono">${money(x.sellPrice)}</td>
+        <td>${taxLabel(x.taxId)}</td>
+        <td class="mono ${x.stock <= x.minStock ? 'warn' : ''}" style="color:${x.stock <= x.minStock ? 'var(--red)' : ''}">${x.stock} ${escapeHtml(x.unit)}</td>
+        <td><button class="btn sm outline" onclick="openProductModal('${x.id}')">Edit</button></td>
+      </tr>`).join('')}
+    </tbody></table>`).join('');
 }
 function renderProductsTable() {
   const el = document.getElementById('products-table');
@@ -2351,3 +2459,4 @@ function render() {
 }
 
 boot();
+
